@@ -1,1 +1,51 @@
-{"name":"Build DishVoice Windows EXE","on":{"workflow_dispatch":{}},"jobs":{"build":{"runs-on":"windows-latest","steps":[{"name":"Checkout","uses":"actions/checkout@v4"},{"name":"Setup Python","uses":"actions/setup-python@v5","with":{"python-version":"3.11"}},{"name":"Install dependencies","run":"python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"},{"name":"Build executable","run":"pyinstaller --noconfirm --clean --windowed --name DishVoice app.py"},{"name":"Package portable app","shell":"pwsh","run":"New-Item -ItemType Directory -Force -Path dist\\DishVoice\\voices | Out-Null; Invoke-WebRequest -Uri \"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx?download=true\" -OutFile dist\\DishVoice\\voices\\ar_JO-kareem-medium.onnx; Invoke-WebRequest -Uri \"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx.json?download=true\" -OutFile dist\\DishVoice\\voices\\ar_JO-kareem-medium.onnx.json; Invoke-WebRequest -Uri \"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\" -OutFile ffmpeg.zip; Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-unpacked -Force; New-Item -ItemType Directory -Force -Path dist\\DishVoice\\bin | Out-Null; Copy-Item (Get-ChildItem -Recurse ffmpeg-unpacked -Filter ffmpeg.exe | Select-Object -First 1).FullName dist\\DishVoice\\bin\\ffmpeg.exe; Copy-Item (Get-ChildItem -Recurse ffmpeg-unpacked -Filter ffprobe.exe | Select-Object -First 1).FullName dist\\DishVoice\\bin\\ffprobe.exe; Copy-Item README_AR.md dist\\DishVoice\\README_AR.md; Compress-Archive -Path dist\\DishVoice -DestinationPath DishVoice-Windows.zip -Force"},{"name":"Upload artifact","uses":"actions/upload-artifact@v4","with":{"name":"DishVoice-Windows","path":"DishVoice-Windows.zip"}}]}}}
+name: Build DishVoice Windows EXE - Egyptian VoiceTut
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU PyTorch and VoiceTut
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install git+https://github.com/k2-fsa/OmniVoice.git
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name DishVoice --collect-all voicetut_tts --collect-all omnivoice --collect-all transformers --collect-all tokenizers app.py
+
+      - name: Download FFmpeg tools
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-unpacked -Force
+          New-Item -ItemType Directory -Force -Path dist\DishVoice\bin | Out-Null
+          Copy-Item (Get-ChildItem -Recurse ffmpeg-unpacked -Filter ffmpeg.exe | Select-Object -First 1).FullName dist\DishVoice\bin\ffmpeg.exe
+          Copy-Item (Get-ChildItem -Recurse ffmpeg-unpacked -Filter ffprobe.exe | Select-Object -First 1).FullName dist\DishVoice\bin\ffprobe.exe
+
+      - name: Package portable app
+        shell: pwsh
+        run: |
+          Copy-Item README_AR.md dist\DishVoice\README_AR.md
+          Compress-Archive -Path dist\DishVoice -DestinationPath DishVoice-Windows-Egyptian-VoiceTut.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DishVoice-Windows-Egyptian-VoiceTut
+          path: DishVoice-Windows-Egyptian-VoiceTut.zip

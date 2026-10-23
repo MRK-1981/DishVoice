@@ -28,6 +28,8 @@ TIME_RANGE_RE = re.compile(
     r"(?:->|→|➜|←|<-|[-–—])\s*"
     r"(?P<end>\d{1,2}:\d{2}(?::\d{2})?)"
 )
+ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+SCENE_LABEL_RE = re.compile(r"^\s*(?:مشهد|المشهد)\s*\d+\s*[:.)-]?\s*", re.IGNORECASE)
 
 MODEL_ID = "mohammedaly22/VoiceTut-TTS"
 SPEAKERS = [
@@ -71,41 +73,67 @@ def bundled_tool(name: str) -> str:
 
 
 def parse_time(value: str) -> float:
-    parts = [int(x) for x in value.split(":")]
+    parts = [int(x.translate(ARABIC_DIGITS)) for x in value.split(":")]
     if len(parts) == 2:
         return parts[0] * 60 + parts[1]
     return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
 
 def parse_scenes(raw: str) -> list[Scene]:
+    # نعالج اتجاه RTL وعلامات التنسيق غير المرئية التي قد يضيفها Word/المتصفح.
+    lines = [
+        line.translate(ARABIC_DIGITS).replace("\u200f", "").replace("\u200e", "").strip()
+        for line in raw.splitlines()
+    ]
     scenes: list[Scene] = []
-    for line_no, line in enumerate(raw.splitlines(), 1):
-        if not line.strip() or line.lstrip().startswith("#"):
+    pending: Scene | None = None
+    pending_text: list[str] = []
+
+    def finish_pending() -> None:
+        nonlocal pending, pending_text
+        if pending is None:
+            return
+        text = " ".join(x.strip(" |:—-–>→←") for x in pending_text if x.strip())
+        if not text:
+            raise ValueError(
+                "وجدت توقيتًا بدون نص منطوق. اكتب النص في نفس السطر أو في السطر التالي."
+            )
+        scenes.append(Scene(pending.start, pending.end, text))
+        pending = None
+        pending_text = []
+
+    for line_no, line in enumerate(lines, 1):
+        if not line or line.startswith("#"):
             continue
-        # ابحث عن نطاق الوقت في أي مكان بالسطر، حتى لو سبقه "مشهد 1 |"
-        # أو كان السهم عربيًا/انعكس بصريًا بسبب اتجاه RTL.
         match = TIME_RANGE_RE.search(line)
         if not match:
-            raise ValueError(
-                f"السطر {line_no} غير مفهوم. استخدم مثلًا: مشهد 1 | 00:00 -> 00:07 | النص"
-            )
-        start, end = parse_time(match.group("start")), parse_time(match.group("end"))
-        # بعض محررات RTL تعرض النطاق معكوسًا مثل 00:07 <- 00:00؛
-        # نستخدم الزمنين بالترتيب الزمني بدل رفض السطر.
+            # في تنسيق «مشهد 01: التوقيت» يأتي النص في السطر التالي؛
+            # وما قبل أول توقيت (العنوان/الملاحظات) يتم تجاهله بأمان.
+            if pending is not None:
+                pending_text.append(SCENE_LABEL_RE.sub("", line).strip())
+            continue
+
+        finish_pending()
+        start = parse_time(match.group("start"))
+        end = parse_time(match.group("end"))
         start, end = min(start, end), max(start, end)
         suffix = line[match.end():].strip(" |:—-–>→←")
         prefix = line[:match.start()].strip(" |:—-–>→←")
-        text = suffix
-        if not text or re.fullmatch(r"مشهد\s*\d+", text, flags=re.IGNORECASE):
-            # يسمح أيضًا بالتنسيق الذي يعرض النص قبل النطاق بسبب RTL.
-            text = re.sub(r"^مشهد\s*\d+\s*[|:،-]?\s*", "", prefix).strip()
-        if not text:
-            text = prefix
-        if not text:
-            raise ValueError(f"السطر {line_no}: لم أجد النص المنطوق بعد التوقيت")
-        scenes.append(Scene(start, end, text))
+        inline = suffix if suffix else prefix
+        inline = SCENE_LABEL_RE.sub("", inline).strip()
+        # لو كان السطر مجرد «مشهد 01: 00:00 → 00:07»، انتظر النص التالي.
+        if inline and not re.fullmatch(r"(?:مشهد|المشهد)\s*\d+", inline, re.IGNORECASE):
+            pending_text = [inline]
+        else:
+            pending_text = []
+        pending = Scene(start, end, "")
+
+    finish_pending()
     if not scenes:
-        raise ValueError("أدخل مشهدًا واحدًا على الأقل")
+        raise ValueError(
+            "لم أجد توقيتات مفهومة. الصيغة المقبولة مثلًا:\n"
+            "مشهد 1: 00:00 → 00:07\nالنص المنطوق هنا"
+        )
     for previous, current in zip(scenes, scenes[1:]):
         if current.start < previous.end:
             raise ValueError("التوقيتات متداخلة؛ راجع بداية كل مشهد")
@@ -226,7 +254,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("المشاهد — كل سطر: البداية -> النهاية | النص"), 2, 0, 1, 3)
         self.script_edit = QPlainTextEdit()
-        self.script_edit.setPlaceholderText("00:00 -> 00:07 | عمرك سألت نفسك...\n00:07 -> 00:17 | الغسالات الحديثة...")
+        self.script_edit.setPlaceholderText(
+            "مثال — الصق السكريبت هنا، ويمكن كتابة النص في السطر التالي للتوقيت:\n"
+            "مشهد 1: 00:00 → 00:07\n"
+            "عمرك سألت نفسك: إزاي غسالة الأطباق بتغسل كل ده؟"
+        )
         layout.addWidget(self.script_edit, 3, 0, 1, 3)
 
         self.progress = QProgressBar()
